@@ -11,7 +11,7 @@
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 
-  <!-- Mixpanel Library via CDN -->
+  <!-- Script Oficial de Mixpanel por CDN -->
   <script src="https://cdn.mxpnl.com/libs/mixpanel-2-latest.min.js"></script>
   <script type="text/javascript">
     if (window.mixpanel) {
@@ -19,8 +19,7 @@
         debug: true,
         track_pageview: true,
         persistence: "localStorage",
-        record_sessions_percent: 100,
-        record_heatmap_data: true,
+        autocapture: true
       });
     }
   </script>
@@ -51,7 +50,7 @@
     const { createClient } = supabase;
 
     const SUPABASE_URL = 'https://vevdatajrcvhqtdwccje.supabase.co';
-    const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZldmRhdGFqcmN2aHF0ZHdjY2plIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTM3OTkzMjUsImV4cCI6MjEwOTM3NTMyNX0.UULXuhM_zhtladlaw3NHpWtFVoggIHTTziX8kT3cuY8';
+    const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZldmRhdGFqcmN2aHF0ZHdjY2plIiwicm9sZSI6InFhbm9uIiwiaWF0IjoxNzkzNzk5MzI1LCJleHAiOjIxMDkzNzUzMjV9.UULXuhM_zhtladlaw3NHpWtFVoggIHTTziX8kT3cuY8';
 
     const supabaseClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
@@ -126,7 +125,6 @@
               const activos = mapeados.filter(e => e.ubicacionActual !== 'ELIMINADO' && e.ubicacionActual === 'BANDEJA');
               setSelectedEmail(activos[0] || null);
               
-              // Evento Mixpanel: Bandeja cargada/vista
               if (window.mixpanel) {
                 window.mixpanel.track('Bandeja Vista', { total_correos: mapeados.length });
               }
@@ -150,7 +148,6 @@
 
       const seleccionarCorreo = (email) => {
         setSelectedEmail(email);
-        // Evento Mixpanel: Correo seleccionado
         if (window.mixpanel) {
           window.mixpanel.track('Correo Seleccionado', { correo_id: email.id });
         }
@@ -168,7 +165,6 @@
         });
         setSelectedEmail(r[0] || null);
 
-        // Evento Mixpanel: Filtro aplicado
         if (window.mixpanel) {
           window.mixpanel.track('Filtro Aplicado', { categoria_filtro: nuevoFiltro });
         }
