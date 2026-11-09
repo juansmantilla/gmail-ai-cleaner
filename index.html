@@ -46,13 +46,21 @@
   <div id="root"></div>
 
   <script type="text/babel">
-    const { useState, useEffect } = React;
+    const { useState, useEffect, useRef } = React;
     const { createClient } = supabase;
 
     const SUPABASE_URL = 'https://vevdatajrcvhqtdwccje.supabase.co';
     const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZldmRhdGFqcmN2aHF0ZHdjY2plIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTM3OTkzMjUsImV4cCI6MjEwOTM3NTMyNX0.UULXuhM_zhtladlaw3NHpWtFVoggIHTTziX8kT3cuY8';
 
     const supabaseClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+    // ─── Helper de Mixpanel ───────────────────────────────────────────────────
+    function mp(eventName, props = {}) {
+      if (window.mixpanel) {
+        window.mixpanel.track(eventName, props);
+      }
+    }
+    // ─────────────────────────────────────────────────────────────────────────
 
     function normalizarCategoria(valor) {
       const texto = String(valor || '').toUpperCase();
@@ -106,9 +114,23 @@
       const [cargando, setCargando] = useState(true);
       const [errorCarga, setErrorCarga] = useState('');
 
+      // ── Refs para tracking de sesión ──────────────────────────────────────
+      const primeraLimpiezaHecha = useRef(false);   // ¿ya hubo primer cleanup?
+      const esPrimeraCarga = useRef(true);           // ¿es la carga inicial?
+      const scanStartTime = useRef(null);            // tiempo de inicio de carga
+      const accionesEnSesion = useRef(0);            // acciones aplicadas en sesión
+      const mensajesAfectadosSesion = useRef(0);     // correos afectados en sesión
+      // ─────────────────────────────────────────────────────────────────────
+
       function cargarCorreos() {
         setCargando(true);
         setErrorCarga('');
+        scanStartTime.current = Date.now();
+
+        // Si ya cargó antes, es una re-sincronización
+        if (!esPrimeraCarga.current) {
+          mp('emails_synced', { source: 'sync_button' });
+        }
 
         supabaseClient
           .from('correos_cuarentena')
@@ -119,15 +141,37 @@
               setErrorCarga(error.message);
               setEmails([]);
               setSelectedEmail(null);
+
+              // ── NUEVO: error al cargar ────────────────────────────────────
+              mp('workflow_step_failed', {
+                workflow_step: 'scan/filter',
+                error_category: 'network',
+                error_code: error.message,
+                retry_count: 0,
+                latency_seconds: ((Date.now() - scanStartTime.current) / 1000).toFixed(2)
+              });
+              // ─────────────────────────────────────────────────────────────
+
             } else {
               const mapeados = (data || []).map(mapearCorreo);
               setEmails(mapeados);
               const activos = mapeados.filter(e => e.ubicacionActual !== 'ELIMINADO' && e.ubicacionActual === 'BANDEJA');
               setSelectedEmail(activos[0] || null);
-              
-              if (window.mixpanel) {
-                window.mixpanel.track('Bandeja Vista', { total_correos: mapeados.length });
-              }
+
+              // ── NUEVO: scan completado ────────────────────────────────────
+              mp('first_scan_completed', {
+                scan_scope: 'correos_cuarentena',
+                message_count_scanned: mapeados.length,
+                scan_duration_seconds: ((Date.now() - scanStartTime.current) / 1000).toFixed(2),
+                scan_result: 'success',
+                error_code: null
+              });
+              // ─────────────────────────────────────────────────────────────
+
+              // Tracking original
+              mp('Bandeja Vista', { total_correos: mapeados.length });
+
+              esPrimeraCarga.current = false;
             }
             setCargando(false);
           });
@@ -148,9 +192,7 @@
 
       const seleccionarCorreo = (email) => {
         setSelectedEmail(email);
-        if (window.mixpanel) {
-          window.mixpanel.track('Correo Seleccionado', { correo_id: email.id });
-        }
+        mp('Correo Seleccionado', { correo_id: email.id });
       };
 
       const cambiarFiltro = (nuevoFiltro) => {
@@ -164,15 +206,36 @@
           return true;
         });
         setSelectedEmail(r[0] || null);
-
-        if (window.mixpanel) {
-          window.mixpanel.track('Filtro Aplicado', { categoria_filtro: nuevoFiltro });
-        }
+        mp('Filtro Aplicado', { categoria_filtro: nuevoFiltro });
       };
 
       const moverUbicacion = (emailTarget, nuevaUbicacion) => {
         const destinoFinal = emailTarget.ubicacionActual === nuevaUbicacion ? 'BANDEJA' : nuevaUbicacion;
-        
+
+        // ── NUEVO: acción aplicada o revertida ────────────────────────────
+        if (destinoFinal === 'BANDEJA') {
+          // El usuario revirtió la categoría → undo/confirm
+          mp('cleanup_undo_confirmed', {
+            undo_type: 'undo',
+            time_to_undo_seconds: null,   // no tenemos timestamp de cuando se movió originalmente
+            undo_result: 'success',
+            affected_message_count: 1
+          });
+        } else {
+          // El usuario aplicó una nueva categoría
+          accionesEnSesion.current += 1;
+          mensajesAfectadosSesion.current += 1;
+
+          mp('cleanup_action_applied', {
+            action_type: destinoFinal.toLowerCase(),
+            selection_size: 1,
+            bulk_mode: 'per_thread',
+            apply_result: 'success',
+            error_code: null
+          });
+        }
+        // ─────────────────────────────────────────────────────────────────
+
         const actualizados = emails.map(e => e.id === emailTarget.id ? { ...e, ubicacionActual: destinoFinal } : e);
         setEmails(actualizados);
 
@@ -193,7 +256,19 @@
             .update({ ubicacionactual: destinoFinal })
             .eq('id', emailTarget.id)
             .then(({ error }) => {
-              if (error) console.error("Error al actualizar Supabase:", error.message);
+              if (error) {
+                console.error("Error al actualizar Supabase:", error.message);
+
+                // ── NUEVO: error al aplicar acción ────────────────────────
+                mp('workflow_step_failed', {
+                  workflow_step: 'apply_actions',
+                  error_category: 'network',
+                  error_code: error.message,
+                  retry_count: 0,
+                  latency_seconds: null
+                });
+                // ─────────────────────────────────────────────────────────
+              }
             });
         }
 
@@ -212,6 +287,40 @@
       const handleAccionFinal = (emailTarget) => {
         const numMb = parseFloat(emailTarget.tamano) || 0.2;
         setMbLiberados(prev => +(prev + numMb).toFixed(1));
+
+        // ── NUEVO: acción de eliminación ──────────────────────────────────
+        accionesEnSesion.current += 1;
+        mensajesAfectadosSesion.current += 1;
+
+        mp('cleanup_action_applied', {
+          action_type: 'delete',
+          selection_size: 1,
+          bulk_mode: 'per_thread',
+          apply_result: 'success',
+          error_code: null
+        });
+
+        // Primera limpieza significativa (primer correo eliminado)
+        if (!primeraLimpiezaHecha.current) {
+          primeraLimpiezaHecha.current = true;
+
+          mp('first_meaningful_cleanup_completed', {
+            meaningful_method: 'bulk_delete',
+            total_actions_count: accionesEnSesion.current,
+            total_affected_messages: mensajesAfectadosSesion.current,
+            completion_time_seconds: null
+          });
+        }
+
+        // Sesión de limpieza completada (cada correo eliminado cuenta como cierre de acción)
+        mp('cleanup_session_completed', {
+          session_number: 1,                              // sin auth no podemos calcular el ordinal real
+          session_type: 'quick_cleanup',
+          total_actions_count: accionesEnSesion.current,
+          total_affected_messages: mensajesAfectadosSesion.current,
+          persistence_level: 'confirmed'
+        });
+        // ─────────────────────────────────────────────────────────────────
 
         const actualizados = emails.map(e => e.id === emailTarget.id ? { ...e, ubicacionActual: 'ELIMINADO' } : e);
         setEmails(actualizados);
@@ -232,7 +341,19 @@
             .update({ ubicacionactual: 'ELIMINADO' })
             .eq('id', emailTarget.id)
             .then(({ error }) => {
-              if (error) console.error("Error al marcar como eliminado:", error.message);
+              if (error) {
+                console.error("Error al marcar como eliminado:", error.message);
+
+                // ── NUEVO: error al eliminar ───────────────────────────────
+                mp('workflow_step_failed', {
+                  workflow_step: 'apply_actions',
+                  error_category: 'network',
+                  error_code: error.message,
+                  retry_count: 0,
+                  latency_seconds: null
+                });
+                // ─────────────────────────────────────────────────────────
+              }
             });
         }
 
