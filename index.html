@@ -11,17 +11,18 @@
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 
-  <!-- Script Oficial de Mixpanel por CDN -->
-  <script src="https://cdn.mxpnl.com/libs/mixpanel-2-latest.min.js"></script>
-  <script type="text/javascript">
-    if (window.mixpanel) {
-      window.mixpanel.init("a8d0a37a6d6fe8129c1dbafc8992132f", {
-        debug: true,
-        track_pageview: true,
-        persistence: "localStorage",
-        autocapture: true
-      });
-    }
+  <!-- Importar e Inicializar Mixpanel mediante Módulo ESM Moderno -->
+  <script type="module">
+    import mixpanel from 'https://cdn.jsdelivr.net/npm/mixpanel-browser@2.56.0/+esm';
+    
+    mixpanel.init("a8d0a37a6d6fe8129c1dbafc8992132f", {
+      debug: true,
+      track_pageview: true,
+      persistence: "localStorage",
+      autocapture: true
+    });
+
+    window.mixpanel = mixpanel;
   </script>
 
   <link rel="preconnect" href="https://fonts.googleapis.com">
