@@ -1,0 +1,444 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Gmail AI Cleaner Dashboard</title>
+  
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js" crossorigin></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+
+  <!-- Mixpanel Library via CDN -->
+  <script src="https://cdn.mxpnl.com/libs/mixpanel-2-latest.min.js"></script>
+  <script type="text/javascript">
+    if (window.mixpanel) {
+      window.mixpanel.init("a8d0a37a6d6fe8129c1dbafc8992132f", {
+        debug: true,
+        track_pageview: true,
+        persistence: "localStorage",
+        record_sessions_percent: 100,
+        record_heatmap_data: true,
+      });
+    }
+  </script>
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Cactus+Classical+Serif&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+  <style>
+    body {
+      font-family: 'Inter', sans-serif;
+      background-color: #F5F3EF;
+      color: #1F1F1F;
+      margin: 0;
+      overflow: hidden;
+    }
+    .font-serif-correo {
+      font-family: 'Cactus Classical Serif', serif;
+    }
+  </style>
+</head>
+<body>
+
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useEffect } = React;
+    const { createClient } = supabase;
+
+    const SUPABASE_URL = 'https://vevdatajrcvhqtdwccje.supabase.co';
+    const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZldmRhdGFqcmN2aHF0ZHdjY2plIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTM3OTkzMjUsImV4cCI6MjEwOTM3NTMyNX0.UULXuhM_zhtladlaw3NHpWtFVoggIHTTziX8kT3cuY8';
+
+    const supabaseClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+    function normalizarCategoria(valor) {
+      const texto = String(valor || '').toUpperCase();
+      if (texto.includes('BASURA')) return 'BASURA';
+      if (texto.includes('IMPORTANTE')) return 'IMPORTANTE';
+      if (texto.includes('URGENTE')) return 'URGENTE';
+      if (texto.includes('GENERAL')) return 'GENERAL';
+      return 'REVISION';
+    }
+
+    function formatearCerteza(valor) {
+      if (!valor) return '90%';
+      if (typeof valor === 'string' && valor.includes('%')) return valor;
+      const numero = Number(valor);
+      if (Number.isNaN(numero)) return String(valor);
+      const porcentaje = numero <= 1 ? numero * 100 : numero;
+      return `${Math.round(porcentaje)}%`;
+    }
+
+    function formatearHora(iso) {
+      if (!iso) return '';
+      const fecha = new Date(iso);
+      if (Number.isNaN(fecha.getTime())) return String(iso);
+      return fecha.toLocaleString('es-CO', { dateStyle: 'short', timeStyle: 'short' });
+    }
+
+    function mapearCorreo(fila) {
+      let ubicacion = String(fila.ubicacionactual || 'BANDEJA').toUpperCase();
+      if (ubicacion === 'REVISION_MANUAL') ubicacion = 'REVISION';
+
+      return {
+        id: fila.id,
+        gmail_id: fila.gmail_id,
+        remitente: fila.remitente || 'Sin remitente',
+        asunto: fila.asunto || '(Sin asunto)',
+        hora: formatearHora(fila.created_at),
+        tamano: fila.tamano || '0.2 MB',
+        categoriaIA: normalizarCategoria(fila.categoriaia ?? fila.categoriia),
+        certeza: formatearCerteza(fila.certeza),
+        motivo: fila.motivo || 'Sin motivo registrado.',
+        cuerpo: fila.cuerpo || 'Este correo no contiene texto plano legible.',
+        ubicacionActual: ubicacion
+      };
+    }
+
+    function GmailCleanerDashboard() {
+      const [emails, setEmails] = useState([]);
+      const [selectedEmail, setSelectedEmail] = useState(null);
+      const [filtro, setFiltro] = useState('TODOS');
+      const [mbLiberados, setMbLiberados] = useState(0);
+      const [cargando, setCargando] = useState(true);
+      const [errorCarga, setErrorCarga] = useState('');
+
+      function cargarCorreos() {
+        setCargando(true);
+        setErrorCarga('');
+
+        supabaseClient
+          .from('correos_cuarentena')
+          .select('*')
+          .order('id', { ascending: true })
+          .then(({ data, error }) => {
+            if (error) {
+              setErrorCarga(error.message);
+              setEmails([]);
+              setSelectedEmail(null);
+            } else {
+              const mapeados = (data || []).map(mapearCorreo);
+              setEmails(mapeados);
+              const activos = mapeados.filter(e => e.ubicacionActual !== 'ELIMINADO' && e.ubicacionActual === 'BANDEJA');
+              setSelectedEmail(activos[0] || null);
+              
+              // Evento Mixpanel: Bandeja cargada/vista
+              if (window.mixpanel) {
+                window.mixpanel.track('Bandeja Vista', { total_correos: mapeados.length });
+              }
+            }
+            setCargando(false);
+          });
+      }
+
+      useEffect(() => {
+        cargarCorreos();
+      }, []);
+
+      const emailsFiltrados = emails.filter(email => {
+        if (email.ubicacionActual === 'ELIMINADO') return false;
+        if (filtro === 'TODOS') return email.ubicacionActual === 'BANDEJA';
+        if (filtro === 'BASURA') return email.ubicacionActual === 'BASURA';
+        if (filtro === 'IMPORTANTE') return email.ubicacionActual === 'IMPORTANTE' || email.ubicacionActual === 'URGENTE';
+        if (filtro === 'REVISION') return email.ubicacionActual === 'REVISION';
+        return true;
+      });
+
+      const seleccionarCorreo = (email) => {
+        setSelectedEmail(email);
+        // Evento Mixpanel: Correo seleccionado
+        if (window.mixpanel) {
+          window.mixpanel.track('Correo Seleccionado', { correo_id: email.id });
+        }
+      };
+
+      const cambiarFiltro = (nuevoFiltro) => {
+        setFiltro(nuevoFiltro);
+        const r = emails.filter(e => {
+          if (e.ubicacionActual === 'ELIMINADO') return false;
+          if (nuevoFiltro === 'TODOS') return e.ubicacionActual === 'BANDEJA';
+          if (nuevoFiltro === 'BASURA') return e.ubicacionActual === 'BASURA';
+          if (nuevoFiltro === 'IMPORTANTE') return e.ubicacionActual === 'IMPORTANTE' || e.ubicacionActual === 'URGENTE';
+          if (nuevoFiltro === 'REVISION') return e.ubicacionActual === 'REVISION';
+          return true;
+        });
+        setSelectedEmail(r[0] || null);
+
+        // Evento Mixpanel: Filtro aplicado
+        if (window.mixpanel) {
+          window.mixpanel.track('Filtro Aplicado', { categoria_filtro: nuevoFiltro });
+        }
+      };
+
+      const moverUbicacion = (emailTarget, nuevaUbicacion) => {
+        const destinoFinal = emailTarget.ubicacionActual === nuevaUbicacion ? 'BANDEJA' : nuevaUbicacion;
+        
+        const actualizados = emails.map(e => e.id === emailTarget.id ? { ...e, ubicacionActual: destinoFinal } : e);
+        setEmails(actualizados);
+
+        const restantes = actualizados.filter(email => {
+          if (email.ubicacionActual === 'ELIMINADO') return false;
+          if (filtro === 'TODOS') return email.ubicacionActual === 'BANDEJA';
+          if (filtro === 'BASURA') return email.ubicacionActual === 'BASURA';
+          if (filtro === 'IMPORTANTE') return email.ubicacionActual === 'IMPORTANTE' || email.ubicacionActual === 'URGENTE';
+          if (filtro === 'REVISION') return email.ubicacionActual === 'REVISION';
+          return true;
+        });
+
+        setSelectedEmail(restantes[0] || null);
+
+        if (emailTarget.id) {
+          supabaseClient
+            .from('correos_cuarentena')
+            .update({ ubicacionactual: destinoFinal })
+            .eq('id', emailTarget.id)
+            .then(({ error }) => {
+              if (error) console.error("Error al actualizar Supabase:", error.message);
+            });
+        }
+
+        if (destinoFinal === 'IMPORTANTE') {
+          fetch('https://elveneco.app.n8n.cloud/webhook/gmail-eliminar', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ 
+              gmail_id: emailTarget.gmail_id,
+              accion: 'IMPORTANTE'
+            })
+          }).catch(err => console.error("Error al disparar webhook importante:", err));
+        }
+      };
+
+      const handleAccionFinal = (emailTarget) => {
+        const numMb = parseFloat(emailTarget.tamano) || 0.2;
+        setMbLiberados(prev => +(prev + numMb).toFixed(1));
+
+        const actualizados = emails.map(e => e.id === emailTarget.id ? { ...e, ubicacionActual: 'ELIMINADO' } : e);
+        setEmails(actualizados);
+
+        const restantesVista = actualizados.filter(email => {
+          if (email.ubicacionActual === 'ELIMINADO') return false;
+          if (filtro === 'TODOS') return email.ubicacionActual === 'BANDEJA';
+          if (filtro === 'BASURA') return email.ubicacionActual === 'BASURA';
+          if (filtro === 'IMPORTANTE') return email.ubicacionActual === 'IMPORTANTE' || email.ubicacionActual === 'URGENTE';
+          if (filtro === 'REVISION') return email.ubicacionActual === 'REVISION';
+          return true;
+        });
+        setSelectedEmail(restantesVista[0] || null);
+
+        if (emailTarget.id) {
+          supabaseClient
+            .from('correos_cuarentena')
+            .update({ ubicacionactual: 'ELIMINADO' })
+            .eq('id', emailTarget.id)
+            .then(({ error }) => {
+              if (error) console.error("Error al marcar como eliminado:", error.message);
+            });
+        }
+
+        fetch('https://elveneco.app.n8n.cloud/webhook/gmail-eliminar', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ 
+            gmail_id: emailTarget.gmail_id,
+            accion: 'ELIMINADO'
+          })
+        }).catch(err => console.error("Error al disparar webhook:", err));
+      };
+
+      const getTagStyle = (catIA) => {
+        if (catIA === 'BASURA') return 'bg-[#F9E4E2] text-[#B15A52]';
+        if (catIA === 'IMPORTANTE' || catIA === 'URGENTE') return 'bg-[#E6EFE8] text-[#5E8A6A]';
+        return 'bg-[#FEF0D0] text-[#9C8452]';
+      };
+
+      const correosActivos = emails.filter(e => e.ubicacionActual !== 'ELIMINADO');
+
+      return (
+        <div className="flex h-screen w-screen overflow-hidden">
+          
+          <aside className="w-64 flex flex-col justify-between p-6 border-r border-[#E2DBD1] shadow-sm" style={{ backgroundColor: '#F0EBE3' }}>
+            <div>
+              <div className="flex items-center gap-3 mb-8">
+                <div className="w-10 h-10 rounded-xl flex items-center justify-center font-bold text-lg shadow-sm border border-[#E2DBD1] bg-white text-[#5A4A32]">
+                  📧
+                </div>
+                <div>
+                  <h1 className="font-bold text-sm tracking-wide text-[#5A4A32]">Gmail AI Cleaner</h1>
+                  <p className="text-xs text-[#8C7A65]">Supabase & n8n</p>
+                </div>
+              </div>
+
+              <nav className="space-y-2">
+                <button 
+                  onClick={() => cambiarFiltro('TODOS')}
+                  className={`w-full text-left px-4 py-2.5 rounded-lg text-sm font-medium transition ${filtro === 'TODOS' ? 'bg-[#6B5A45] text-white' : 'hover:bg-[#E8E2D9] text-[#5A4A32]'}`}>
+                  📥 Bandeja Analizada
+                </button>
+                <button 
+                  onClick={() => cambiarFiltro('BASURA')}
+                  className={`w-full text-left px-4 py-2.5 rounded-lg text-sm font-medium transition ${filtro === 'BASURA' ? 'bg-[#6B5A45] text-white' : 'hover:bg-[#E8E2D9] text-[#5A4A32]'}`}>
+                  🗑️ Basura Detectada
+                </button>
+                <button 
+                  onClick={() => cambiarFiltro('REVISION')}
+                  className={`w-full text-left px-4 py-2.5 rounded-lg text-sm font-medium transition ${filtro === 'REVISION' ? 'bg-[#6B5A45] text-white' : 'hover:bg-[#E8E2D9] text-[#5A4A32]'}`}>
+                  ⚠️ Revisión Manual
+                </button>
+                <button 
+                  onClick={() => cambiarFiltro('IMPORTANTE')}
+                  className={`w-full text-left px-4 py-2.5 rounded-lg text-sm font-medium transition ${filtro === 'IMPORTANTE' ? 'bg-[#6B5A45] text-white' : 'hover:bg-[#E8E2D9] text-[#5A4A32]'}`}>
+                  ⭐ Importantes
+                </button>
+              </nav>
+            </div>
+
+            <div className="p-4 rounded-xl text-xs space-y-2 shadow-sm border border-[#E2DBD1] bg-white">
+              <p className="font-semibold text-[#5A4A32]">Estado de Cuarentena</p>
+              <div className="flex justify-between items-center text-xs text-[#8C7A65]">
+                <span>Activos en lista:</span>
+                <strong className="text-[#5A4A32]">{correosActivos.length} correos</strong>
+              </div>
+            </div>
+          </aside>
+
+          <main className="flex-1 flex flex-col h-full overflow-hidden">
+            
+            <header className="h-16 px-8 flex items-center justify-between border-b border-[#EBE9E5] shadow-sm bg-white">
+              <div className="flex items-center gap-4">
+                <div className="text-xs font-semibold px-4 py-2 rounded-lg shadow-sm border border-[#EBE9E5] bg-[#FFFBEB] text-[#5A4A32]">
+                  ✨ Espacio Liberado: <strong className="text-[#5A4A32]">{mbLiberados} MB</strong>
+                </div>
+              </div>
+
+              <button 
+                onClick={cargarCorreos}
+                className="px-5 py-2.5 rounded-xl text-xs font-semibold shadow-sm transition hover:opacity-95 active:scale-95 border border-[#EBE9E5] bg-[#FEF6E8] text-[#5A4A32]">
+                🔄 Sincronizar Supabase
+              </button>
+            </header>
+
+            <div className="flex-1 flex overflow-hidden">
+              
+              <section className="w-5/12 border-r border-[#E2DBD1] overflow-y-auto p-4 space-y-3 bg-[#F5F3EF]">
+                <h2 className="text-xs font-bold uppercase tracking-wider text-[#8C7A65] px-2">
+                  Listado ({emailsFiltrados.length})
+                </h2>
+                
+                {cargando ? (
+                  <p className="text-xs text-[#8C7A65] text-center py-10">Cargando correos...</p>
+                ) : errorCarga ? (
+                  <p className="text-xs text-red-600 text-center py-10">Error: {errorCarga}</p>
+                ) : emailsFiltrados.length === 0 ? (
+                  <p className="text-xs text-[#8C7A65] text-center py-10">No hay correos en esta sección.</p>
+                ) : (
+                  emailsFiltrados.map((email) => (
+                    <div
+                      key={email.id}
+                      onClick={() => seleccionarCorreo(email)}
+                      className={`p-4 rounded-xl cursor-pointer transition shadow-sm border bg-white ${selectedEmail?.id === email.id ? 'border-[#6B5A45] ring-2 ring-[#6B5A45]/20' : 'border-[#EBE9E5] hover:border-[#D6D2CB]'}`}
+                    >
+                      <div className="flex justify-between items-start mb-1.5">
+                        <span className="text-sm font-semibold truncate max-w-[190px] text-slate-900">ID #{email.id}: {email.remitente}</span>
+                        <span className="text-xs text-slate-500">{email.hora}</span>
+                      </div>
+                      <p className="text-sm font-medium line-clamp-1 mb-2.5 text-slate-800">{email.asunto}</p>
+                      
+                      <div className="flex items-center justify-between">
+                        <span className={`text-xs px-2.5 py-0.5 rounded-full font-bold ${getTagStyle(email.categoriaIA)}`}>
+                          {email.categoriaIA} ({email.certeza})
+                        </span>
+                        <span className="text-xs text-slate-500">{email.tamano}</span>
+                      </div>
+                    </div>
+                  ))
+                )}
+              </section>
+
+              <section className="w-7/12 flex flex-col h-full overflow-y-auto p-8 bg-[#F5F3EF]">
+                {selectedEmail ? (
+                  <div className="space-y-6 max-w-2xl mx-auto w-full">
+                    
+                    <div className="p-6 rounded-2xl border border-[#EBE9E5] shadow-sm space-y-3.5 bg-white">
+                      <div className="flex justify-between items-center">
+                        <span className={`text-xs font-bold px-3 py-1 rounded-lg ${getTagStyle(selectedEmail.categoriaIA)}`}>
+                          Diagnóstico IA: {selectedEmail.categoriaIA} ({selectedEmail.certeza})
+                        </span>
+                        <span className="text-xs text-slate-600 font-medium">Registro ID #{selectedEmail.id}</span>
+                      </div>
+                      
+                      <h2 className="text-lg font-bold text-slate-900 leading-snug">{selectedEmail.asunto}</h2>
+                      <p className="text-sm text-slate-700">De: <strong>{selectedEmail.remitente}</strong></p>
+
+                      <div className="text-sm p-3.5 rounded-xl border border-[#F0EAD2] text-slate-800 bg-[#FBF9E6]">
+                        <strong>Motivo IA:</strong> {selectedEmail.motivo}
+                      </div>
+                    </div>
+
+                    <div className="p-7 rounded-2xl border border-[#EBE9E5] shadow-sm space-y-3.5 bg-white">
+                      <p className="text-xs font-bold uppercase tracking-wider text-slate-500 border-b border-[#EBE9E5] pb-2">Contenido del Correo</p>
+                      <p className="font-serif-correo text-base text-slate-900 leading-relaxed py-2">
+                        "{selectedEmail.cuerpo}"
+                      </p>
+                    </div>
+
+                    <div className="p-5 rounded-2xl border border-[#EBE9E5] shadow-sm space-y-3.5 bg-white">
+                      <p className="text-xs font-bold text-slate-800">Cambiar Categoría / Ubicación</p>
+                      <div className="grid grid-cols-3 gap-2">
+                        <button
+                          onClick={() => moverUbicacion(selectedEmail, 'IMPORTANTE')}
+                          className={`py-2.5 px-3 rounded-xl text-xs font-semibold shadow-sm border transition ${
+                            selectedEmail.ubicacionActual === 'IMPORTANTE' ? 'bg-emerald-600 text-white' : 'bg-[#F5F3EF] hover:bg-emerald-50 text-emerald-900'
+                          }`}>
+                          {selectedEmail.ubicacionActual === 'IMPORTANTE' ? '✓ En Importantes' : '⭐ Mover a Importantes'}
+                        </button>
+
+                        <button
+                          onClick={() => moverUbicacion(selectedEmail, 'REVISION')}
+                          className={`py-2.5 px-3 rounded-xl text-xs font-semibold shadow-sm border transition ${
+                            selectedEmail.ubicacionActual === 'REVISION' ? 'bg-amber-600 text-white' : 'bg-[#F5F3EF] hover:bg-amber-50 text-amber-900'
+                          }`}>
+                          {selectedEmail.ubicacionActual === 'REVISION' ? '✓ En Revisión' : '⚠️ Mover a Revisión'}
+                        </button>
+
+                        <button
+                          onClick={() => moverUbicacion(selectedEmail, 'BASURA')}
+                          className={`py-2.5 px-3 rounded-xl text-xs font-semibold shadow-sm border transition ${
+                            selectedEmail.ubicacionActual === 'BASURA' ? 'bg-red-600 text-white' : 'bg-[#F5F3EF] hover:bg-red-50 text-red-700'
+                          }`}>
+                          {selectedEmail.ubicacionActual === 'BASURA' ? '✓ En Basura' : '🗑️ Mover a Basura'}
+                        </button>
+                      </div>
+
+                      <div className="flex items-center gap-3 pt-3 border-t border-[#EBE9E5]">
+                        <button
+                          onClick={() => handleAccionFinal(selectedEmail)}
+                          className="flex-1 py-3 px-4 rounded-xl text-xs font-bold shadow-sm transition hover:opacity-90 bg-red-600 text-white">
+                          🗑️ Marcar como ELIMINADO
+                        </button>
+                      </div>
+                    </div>
+
+                  </div>
+                ) : (
+                  <div className="flex-1 flex items-center justify-center text-slate-500 text-sm">
+                    Selecciona un correo para ver sus detalles.
+                  </div>
+                )}
+              </section>
+
+            </div>
+          </main>
+        </div>
+      );
+    }
+
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<GmailCleanerDashboard />);
+  </script>
+</body>
+</html>
